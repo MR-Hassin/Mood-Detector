@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mood Detector</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+    <style>
+        .mood-indicator {
+            transition: all 0.5s ease;
+        }
+        .video-container {
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+            border-radius: 15px;
+            overflow: hidden;
+            background-color: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .face-box {
+            position: absolute;
+            border: 3px solid;
+            border-radius: 10px;
+            transition: all 0.3s ease;
+        }
+        #video {
+            max-width: 100%;
+            height: auto;
+        }
+        .permission-denied {
+            color: #f87171;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-indigo-900 to-purple-800 min-h-screen flex flex-col items-center justify-center p-4 text-white">
+    <div class="max-w-4xl w-full text-center">
+        <h1 class="text-4xl md:text-5xl font-bold mb-2">Mood Detector</h1>
+        <p class="text-xl text-indigo-200 mb-8">Let me guess how you're feeling today</p>
+        
+        <div class="video-container relative mx-auto mb-8 w-full max-w-2xl aspect-video">
+            <video id="video" width="640" height="480" autoplay muted playsinline class="w-full h-auto rounded-lg"></video>
+            <div id="video-placeholder" class="text-center p-4">
+                <p class="text-white">Camera will start when you click "Start Detection"</p>
+            </div>
+        </div>
+        
+        <div class="bg-white bg-opacity-10 backdrop-blur-lg rounded-xl p-6 mb-8">
+            <div class="flex flex-col md:flex-row justify-between items-center">
+                <div class="mb-4 md:mb-0">
+                    <h2 class="text-2xl font-semibold mb-2">Current Mood</h2>
+                    <div id="mood" class="text-4xl font-bold mood-indicator">😐</div>
+                    <div id="mood-text" class="text-xl mt-2">Click Start to begin</div>
+                </div>
+                <div class="text-left">
+                    <h2 class="text-2xl font-semibold mb-2">Detection Info</h2>
+                    <div id="detection-info" class="space-y-1">
+                        <div>Faces detected: <span id="face-count" class="font-bold">0</span></div>
+                        <div>Confidence: <span id="confidence" class="font-bold">0%</span></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="flex flex-col sm:flex-row justify-center gap-4">
+            <button id="startBtn" class="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-full transition-all transform hover:scale-105">
+                Start Detection
+            </button>
+            <button id="stopBtn" disabled class="bg-gray-500 text-white font-bold py-3 px-6 rounded-full transition-all">
+                Stop Detection
+            </button>
+        </div>
+        <div id="error-message" class="mt-4 text-red-300 hidden"></div>
+    </div>
+
+    <script>
+        // DOM elements
+        const video = document.getElementById('video');
+        const videoPlaceholder = document.getElementById('video-placeholder');
+        const moodElement = document.getElementById('mood');
+        const moodTextElement = document.getElementById('mood-text');
+        const faceCountElement = document.getElementById('face-count');
+        const confidenceElement = document.getElementById('confidence');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const errorMessage = document.getElementById('error-message');
+        
+        let detectionInterval;
+        let isDetecting = false;
+        let modelsLoaded = false;
+
+        // Load face-api models
+        function loadModels() {
+            startBtn.disabled = true;
+            startBtn.textContent = "Loading models...";
+            
+            Promise.all([
+                faceapi.nets.tinyFaceDetector.loadFromUri('https://justadudewhohacks.github.io/face-api.js/models'),
+                faceapi.nets.faceLandmark68Net.loadFromUri('https://justadudewhohacks.github.io/face-api.js/models'),
+                faceapi.nets.faceRecognitionNet.loadFromUri('https://justadudewhohacks.github.io/face-api.js/models'),
+                faceapi.nets.faceExpressionNet.loadFromUri('https://justadudewhohacks.github.io/face-api.js/models')
+            ]).then(() => {
+                modelsLoaded = true;
+                startBtn.disabled = false;
+                startBtn.textContent = "Start Detection";
+                moodTextElement.textContent = "Ready to start detection";
+            }).catch(err => {
+                console.error(err);
+                showError("Failed to load face detection models. Please refresh the page.");
+                startBtn.textContent = "Failed to load";
+            });
+        }
+
+        // Show error message
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorMessage.classList.remove('hidden');
+        }
+
+        // Hide error message
+        function hideError() {
+            errorMessage.classList.add('hidden');
+        }
+
+        // Start video stream
+        async function startVideo() {
+            hideError();
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        facingMode: 'user',
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    },
+                    audio: false 
+                });
+                
+                video.srcObject = stream;
+                videoPlaceholder.classList.add('hidden');
+                video.classList.remove('hidden');
+                
+                // Enable stop button
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+                
+                return true;
+            } catch (err) {
+                console.error(err);
+                if (err.name === 'NotAllowedError') {
+                    showError("Camera access was denied. Please allow camera permissions to use this feature.");
+                } else if (err.name === 'NotFoundError' || err.name === 'OverconstrainedError') {
+                    showError("No camera found or camera doesn't meet requirements.");
+                } else {
+                    showError("Could not access camera: " + err.message);
+                }
+                stopDetection();
+                return false;
+            }
+        }
+
+        // Start face detection
+        async function startDetection() {
+            if (isDetecting) return;
+            
+            if (!modelsLoaded) {
+                showError("Models are still loading. Please wait...");
+                return;
+            }
+            
+            const cameraStarted = await startVideo();
+            if (!cameraStarted) return;
+            
+            isDetecting = true;
+            moodTextElement.textContent = "Detecting mood...";
+            
+            detectionInterval = setInterval(async () => {
+                try {
+                    const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
+                        .withFaceLandmarks()
+                        .withFaceExpressions();
+                    
+                    // Clear previous face boxes
+                    document.querySelectorAll('.face-box').forEach(el => el.remove());
+                    
+                    // Update face count
+                    faceCountElement.textContent = detections.length;
+                    
+                    if (detections.length > 0) {
+                        const expressions = detections[0].expressions;
+                        const sortedExpressions = Object.entries(expressions)
+                            .sort((a, b) => b[1] - a[1]);
+                        
+                        const [dominantExpression, score] = sortedExpressions[0];
+                        const confidence = Math.round(score * 100);
+                        
+                        confidenceElement.textContent = `${confidence}%`;
+                        
+                        // Update mood display
+                        let emoji, text, color;
+                        if (dominantExpression === 'happy') {
+                            emoji = '😊';
+                            text = 'You look happy!';
+                            color = 'border-yellow-300';
+                        } else if (dominantExpression === 'sad') {
+                            emoji = '😢';
+                            text = 'You look sad...';
+                            color = 'border-blue-300';
+                        } else if (dominantExpression === 'angry') {
+                            emoji = '😠';
+                            text = 'You look angry!';
+                            color = 'border-red-400';
+                        } else if (dominantExpression === 'surprised') {
+                            emoji = '😲';
+                            text = 'You look surprised!';
+                            color = 'border-purple-300';
+                        } else if (dominantExpression === 'disgusted') {
+                            emoji = '🤢';
+                            text = 'You look disgusted';
+                            color = 'border-green-300';
+                        } else if (dominantExpression === 'fearful') {
+                            emoji = '😨';
+                            text = 'You look fearful';
+                            color = 'border-gray-300';
+                        } else {
+                            emoji = '😐';
+                            text = 'You look neutral';
+                            color = 'border-white';
+                        }
+                        
+                        moodElement.textContent = emoji;
+                        moodTextElement.textContent = text;
+                        
+                        // Draw face boxes
+                        detections.forEach(detection => {
+                            const box = detection.detection.box;
+                            const faceBox = document.createElement('div');
+                            faceBox.className = `face-box ${color}`;
+                            Object.assign(faceBox.style, {
+                                left: `${box.x}px`,
+                                top: `${box.y}px`,
+                                width: `${box.width}px`,
+                                height: `${box.height}px`
+                            });
+                            document.querySelector('.video-container').appendChild(faceBox);
+                        });
+                    } else {
+                        moodElement.textContent = '😐';
+                        moodTextElement.textContent = 'No face detected';
+                        confidenceElement.textContent = '0%';
+                    }
+                } catch (err) {
+                    console.error("Detection error:", err);
+                    showError("Error during face detection. Please try again.");
+                    stopDetection();
+                }
+            }, 500);
+        }
+
+        // Stop face detection
+        function stopDetection() {
+            if (!isDetecting) return;
+            
+            clearInterval(detectionInterval);
+            isDetecting = false;
+            
+            // Stop video stream
+            if (video.srcObject) {
+                video.srcObject.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+            }
+            
+            // Reset UI
+            videoPlaceholder.classList.remove('hidden');
+            video.classList.add('hidden');
+            moodElement.textContent = '😐';
+            moodTextElement.textContent = 'Detection stopped';
+            faceCountElement.textContent = '0';
+            confidenceElement.textContent = '0%';
+            document.querySelectorAll('.face-box').forEach(el => el.remove());
+            
+            // Reset buttons
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            loadModels();
+            startBtn.addEventListener('click', startDetection);
+            stopBtn.addEventListener('click', stopDetection);
+            
+            // Hide video initially
+            video.classList.add('hidden');
+        });
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            if (isDetecting) {
+                // Face boxes will be repositioned in next detection
+            }
+        });
+    </script>
+</body>
+</html>
